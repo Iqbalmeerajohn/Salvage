@@ -16,7 +16,7 @@ from . import agent, audit, metrics, outbox
 from .config import settings
 from .db import connect, init_db
 from .payments.factory import get_gateway
-from .seed import DATA_DIR, load
+from .seed import load
 
 app = FastAPI(title="SALVAGE", version="0.1.0")
 app.add_middleware(
@@ -41,12 +41,13 @@ def _db():
         conn = connect()
         try:
             # Seed if EITHER table is empty, so a partially-seeded cloud database
-            # heals itself. load() is idempotent (upserts by primary key).
-            if (DATA_DIR / "customers.json").exists():
-                n_cust = conn.execute("SELECT COUNT(*) AS c FROM customers").fetchone()["c"]
-                n_pay = conn.execute("SELECT COUNT(*) AS c FROM payments").fetchone()["c"]
-                if n_cust == 0 or n_pay == 0:
-                    load(conn)
+            # heals itself. load() upserts by primary key (idempotent) and falls
+            # back to in-process synth generation when data/*.json isn't shipped
+            # (e.g. a backend-only cloud build), so this works everywhere.
+            n_cust = conn.execute("SELECT COUNT(*) AS c FROM customers").fetchone()["c"]
+            n_pay = conn.execute("SELECT COUNT(*) AS c FROM payments").fetchone()["c"]
+            if n_cust == 0 or n_pay == 0:
+                load(conn)
         finally:
             conn.close()
         # In single-service cloud deploys, drain the outbox in-process.
