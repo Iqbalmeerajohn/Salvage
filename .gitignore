@@ -1,0 +1,26 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+
+# Env / secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite runtime artifacts (regenerable)
+data/*.db
+data/*.db-wal
+data/*.db-shm

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "prod_000",
+    "name": "Cold brew subscription",
+    "price_paise": 34000,
+    "category": "food",
+    "synthetic": true
+  },
+  {
+    "id": "prod_001",
+    "name": "Yoga mat pro",
+    "price_paise": 189900,
+    "category": "fitness",
+    "synthetic": true
+  },
+  {
+    "id": "prod_002",
+    "name": "Running shoes",
+    "price_paise": 459000,
+    "category": "fitness",
+    "synthetic": true
+  },
+  {
+    "id": "prod_003",
+    "name": "Skincare set",
+    "price_paise": 129900,
+    "category": "beauty",
+    "synthetic": true
+  },
+  {
+    "id": "prod_004",
+    "name": "Wireless earbuds",
+    "price_paise": 249900,
+    "category": "electronics",
+    "synthetic": true
+  },
+  {
+    "id": "prod_005",
+    "name": "Standing desk",
+    "price_paise": 1299000,
+    "category": "home",
+    "synthetic": true
+  },
+  {
+    "id": "prod_006",
+    "name": "Protein 1kg",
+    "price_paise": 219900,
+    "category": "fitness",
+    "synthetic": true
+  },
+  {
+    "id": "prod_007",
+    "name": "Ceramic dinner set",
+    "price_paise": 349900,
+    "category": "home",
+    "synthetic": true
+  }
+]
