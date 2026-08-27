@@ -18,7 +18,15 @@ from pathlib import Path
 
 from .config import settings
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Accept our own var first, then the names the Supabase<>Vercel integration
+# injects automatically (so connecting that integration needs zero manual config).
+# Prefer a non-pooling/direct URL for psycopg; fall back to the pooled one.
+DATABASE_URL = (
+    os.getenv("DATABASE_URL")
+    or os.getenv("POSTGRES_URL_NON_POOLING")
+    or os.getenv("POSTGRES_URL")
+    or ""
+)
 IS_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
 _SCHEMA_SQLITE = """
@@ -187,7 +195,12 @@ def connect(db_path: str | None = None) -> Conn:
         import psycopg
         from psycopg.rows import dict_row
 
-        raw = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row)
+        # prepare_threshold=None disables server-side prepared statements, which
+        # keeps us compatible with pgbouncer transaction-pooler URLs (Supabase
+        # pooled connection) as well as direct connections.
+        raw = psycopg.connect(
+            DATABASE_URL, autocommit=True, row_factory=dict_row, prepare_threshold=None
+        )
         return Conn(raw, True)
 
     path = db_path or settings.db_path
