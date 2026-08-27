@@ -40,6 +40,20 @@ export default function Dashboard() {
     }
   }
 
+  async function diagnoseLive() {
+    setBusy(true);
+    setErr(null);
+    try {
+      // The refusal case: the live model proposes an incentive, the policy vetoes it.
+      await api.diagnoseLive("pay_hero_refuse");
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function approve(id: string) {
     setBusy(true);
     try {
@@ -76,6 +90,9 @@ export default function Dashboard() {
       <div className="row" style={{ marginTop: 18 }}>
         <button className="btn" onClick={runBatch} disabled={busy}>
           {busy ? "Running…" : "Run recovery batch"}
+        </button>
+        <button className="btn ghost" onClick={diagnoseLive} disabled={busy}>
+          Diagnose one live (Gemini)
         </button>
         <button className="btn ghost" onClick={refresh} disabled={busy}>
           Refresh

@@ -149,18 +149,22 @@ def _extract_payment(conn, payload):
 
 @app.post("/demo/simulate-failure/{payment_id}")
 def simulate_failure(payment_id: str) -> dict:
-    """Inject a synthetic failed payment into the loop as if a webhook arrived."""
+    """Run a SINGLE failed payment through the live configured provider (Gemini
+    if a key is set, else mock). Uses a distinct 'live_' event id so it appears
+    as its own row alongside the mock batch, showcasing the real model."""
     conn = _db()
     try:
         p = conn.execute("SELECT * FROM payments WHERE id=?", (payment_id,)).fetchone()
         if p is None:
             raise HTTPException(status_code=404, detail="no such payment")
-        event_id = f"evt_{payment_id}"
+        event_id = f"evt_live_{payment_id}"
         conn.execute(
             "INSERT OR IGNORE INTO events (event_id, kind, payload_json, received_at) VALUES (?,?,?,?)",
             (event_id, "payment.failed", json.dumps({"payment_id": payment_id}), _now()),
         )
+        # Default Router => real Gemini when configured.
         rec = agent.process_failed_payment(conn, event_id, p)
+        outbox.run_once(conn, get_gateway())
         return {"recovery": rec}
     finally:
         conn.close()
@@ -169,7 +173,17 @@ def simulate_failure(payment_id: str) -> dict:
 @app.post("/demo/run-batch")
 def run_batch() -> dict:
     """Process every failed payment in the dataset, then drain the worker once.
-    This is the headline demo action."""
+    This is the headline demo action.
+
+    The bulk batch runs on the deterministic MOCK diagnoser on purpose: it makes
+    the demo instant and byte-identical every time, and keeps us well under the
+    serverless timeout (a real-LLM call per payment would be minutes for 88 rows).
+    To showcase the live model, use POST /demo/simulate-failure/{payment_id},
+    which runs a single payment through the configured provider (Gemini)."""
+    from .llm.mock import MockProvider
+    from .llm.router import Router
+
+    mock_router = Router(providers=[MockProvider()])
     conn = _db()
     try:
         failed = conn.execute("SELECT * FROM payments WHERE status='failed'").fetchall()
@@ -179,7 +193,7 @@ def run_batch() -> dict:
                 "INSERT OR IGNORE INTO events (event_id, kind, payload_json, received_at) VALUES (?,?,?,?)",
                 (event_id, "payment.failed", json.dumps({"payment_id": p["id"]}), _now()),
             )
-            agent.process_failed_payment(conn, event_id, p)
+            agent.process_failed_payment(conn, event_id, p, router=mock_router)
         executed = outbox.run_once(conn, get_gateway())
         return {"processed": len(failed), "executed": executed, "metrics": metrics.compute(conn)}
     finally:

@@ -11,6 +11,8 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => j<any>("/health"),
   runBatch: () => j<any>("/demo/run-batch", { method: "POST" }),
+  diagnoseLive: (paymentId: string) =>
+    j<any>(`/demo/simulate-failure/${paymentId}`, { method: "POST" }),
   recoveries: () => j<{ recoveries: Recovery[] }>("/recoveries"),
   metrics: () => j<Metrics>("/metrics"),
   auditVerify: () => j<{ intact: boolean; first_broken_seq: number | null }>("/audit/verify"),
