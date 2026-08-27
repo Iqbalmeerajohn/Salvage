@@ -40,12 +40,12 @@ def _db():
         init_db()
         conn = connect()
         try:
-            n = conn.execute(
-                "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='customers'"
-            ).fetchone()["c"]
-            if n:
-                empty = conn.execute("SELECT COUNT(*) AS c FROM customers").fetchone()["c"] == 0
-                if empty and (DATA_DIR / "customers.json").exists():
+            # Seed if EITHER table is empty, so a partially-seeded cloud database
+            # heals itself. load() is idempotent (upserts by primary key).
+            if (DATA_DIR / "customers.json").exists():
+                n_cust = conn.execute("SELECT COUNT(*) AS c FROM customers").fetchone()["c"]
+                n_pay = conn.execute("SELECT COUNT(*) AS c FROM payments").fetchone()["c"]
+                if n_cust == 0 or n_pay == 0:
                     load(conn)
         finally:
             conn.close()
