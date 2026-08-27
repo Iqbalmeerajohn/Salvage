@@ -49,6 +49,13 @@ def _db():
                     load(conn)
         finally:
             conn.close()
+        # In single-service cloud deploys, drain the outbox in-process.
+        import os
+
+        if os.getenv("RUN_WORKER", "").lower() in ("1", "true", "yes"):
+            from .worker import start_background
+
+            start_background()
         _ready = True
     return connect()
 

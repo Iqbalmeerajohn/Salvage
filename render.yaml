@@ -1,0 +1,53 @@
+# One-click cloud deploy for SALVAGE (Render Blueprint).
+# Creates: a free Postgres, an always-reachable API, and a continuous worker.
+# In Render: New -> Blueprint -> point at this repo. Set GEMINI_API_KEY /
+# RAZORPAY_* in the dashboard (they are marked sync:false so they aren't in git).
+#
+# Free-tier note: the web service sleeps after ~15 min idle and cold-starts on
+# the next request. The Postgres and worker persist. For an always-warm API,
+# bump the web service to a paid instance — no code change.
+
+databases:
+  - name: salvage-db
+    plan: free
+
+services:
+  - type: web
+    name: salvage-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: salvage-db
+          property: connectionString
+      - key: RUN_WORKER          # single-service mode: API also drains the outbox
+        value: "true"
+      - key: REQUIRE_WEBHOOK_SIGNATURE
+        value: "false"           # set true once RAZORPAY_WEBHOOK_SECRET is added
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+  # Optional dedicated worker (leave RUN_WORKER=true on the web service and you
+  # do NOT need this; enable it only if you want the worker isolated).
+  # - type: worker
+  #   name: salvage-worker
+  #   runtime: docker
+  #   rootDir: backend
+  #   dockerfilePath: ./Dockerfile
+  #   plan: free
+  #   dockerCommand: python -m salvage.worker
+  #   envVars:
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: salvage-db
+  #         property: connectionString

@@ -1,120 +1,202 @@
-"""SQLite persistence layer.
+"""Storage layer — runs on SQLite (local/demo) or Postgres (cloud).
 
-Chosen for the demo because it needs no account, no network, and no server —
-the whole recovery loop runs offline and identically every time, which is the
-reliability property the submission is built around. The schema is deliberately
-plain SQL that ports to Postgres/Supabase for production (see ROADMAP.md).
+Why both: SQLite makes the demo reliable and account-free; Postgres is required
+for real cloud deployment, because cloud filesystems are ephemeral (a container
+restart would erase a SQLite file, taking the audit trail with it). Set
+DATABASE_URL to a postgres:// URL and the same code runs unchanged.
 
-Concurrency note: WAL mode + a short busy timeout let the API and the worker
-touch the same file safely for a single-node demo.
+The connection wrapper keeps sqlite3's familiar `conn.execute(sql, params)`
+shape and translates the small number of dialect differences (placeholders,
+autoincrement, upserts) in one place, so the rest of the codebase stays plain SQL.
 """
 from __future__ import annotations
 
+import os
+import re
 import sqlite3
 from pathlib import Path
 
 from .config import settings
 
-SCHEMA = """
--- Raw inbound webhook events. Dedup key = razorpay event id.
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+IS_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
+_SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS events (
-    event_id     TEXT PRIMARY KEY,          -- razorpay 'x-razorpay-event-id' / payload id
-    kind         TEXT NOT NULL,             -- e.g. 'payment.failed'
+    event_id     TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     received_at  TEXT NOT NULL
 );
-
--- Synthetic merchant data (loaded from data/*.json).
 CREATE TABLE IF NOT EXISTS customers (
-    id                   TEXT PRIMARY KEY,
-    name                 TEXT NOT NULL,
-    segment              TEXT NOT NULL,
-    lifetime_value_paise INTEGER NOT NULL,
-    orders_count         INTEGER NOT NULL,
+    id                    TEXT PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    segment               TEXT NOT NULL,
+    lifetime_value_paise  BIGINT NOT NULL,
+    orders_count          INTEGER NOT NULL,
     days_since_last_order INTEGER NOT NULL,
-    incentives_last_30d  INTEGER NOT NULL,
-    is_churn_risk        INTEGER NOT NULL,
-    is_flagged_abuse     INTEGER NOT NULL,
-    contacts_in_window   INTEGER NOT NULL DEFAULT 0
+    incentives_last_30d   INTEGER NOT NULL,
+    is_churn_risk         INTEGER NOT NULL,
+    is_flagged_abuse      INTEGER NOT NULL,
+    contacts_in_window    INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS payments (
     id             TEXT PRIMARY KEY,
     order_id       TEXT NOT NULL,
     customer_id    TEXT NOT NULL,
-    amount_paise   INTEGER NOT NULL,
+    amount_paise   BIGINT NOT NULL,
     method         TEXT NOT NULL,
-    status         TEXT NOT NULL,           -- captured | failed
+    status         TEXT NOT NULL,
     failure_reason TEXT,
     created_at     TEXT NOT NULL
 );
-
--- One recovery decision per processed failed payment.
 CREATE TABLE IF NOT EXISTS recoveries (
-    id                TEXT PRIMARY KEY,      -- = event_id
+    id                TEXT PRIMARY KEY,
     payment_id        TEXT NOT NULL,
     customer_id       TEXT NOT NULL,
-    amount_paise      INTEGER NOT NULL,
+    amount_paise      BIGINT NOT NULL,
     root_cause        TEXT NOT NULL,
-    llm_provider      TEXT NOT NULL,         -- mock | gemini | local  (never lies)
+    llm_provider      TEXT NOT NULL,
     proposed_play     TEXT NOT NULL,
     final_play        TEXT NOT NULL,
-    incentive_paise   INTEGER NOT NULL,
+    incentive_paise   BIGINT NOT NULL,
     requires_approval INTEGER NOT NULL,
     vetoed            INTEGER NOT NULL,
-    status            TEXT NOT NULL,         -- decided | awaiting_approval | executing | executed | skipped | failed
+    status            TEXT NOT NULL,
     in_control_group  INTEGER NOT NULL DEFAULT 0,
     reasons_json      TEXT NOT NULL,
     created_at        TEXT NOT NULL
 );
-
--- Outbox: the exactly-once execution queue. A row here means "money action
--- intended"; the worker is the only thing that performs it.
 CREATE TABLE IF NOT EXISTS outbox (
-    idempotency_key TEXT PRIMARY KEY,        -- = recovery id; guarantees one action per recovery
+    idempotency_key TEXT PRIMARY KEY,
     recovery_id     TEXT NOT NULL,
-    kind            TEXT NOT NULL,           -- create_recovery_link
-    amount_paise    INTEGER NOT NULL,
-    status          TEXT NOT NULL,           -- pending | done | dead
+    kind            TEXT NOT NULL,
+    amount_paise    BIGINT NOT NULL,
+    status          TEXT NOT NULL,
     attempts        INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
-
--- Executions: the record that a money action really happened. UNIQUE on the
--- idempotency key is the hard guarantee that a link is created at most once.
 CREATE TABLE IF NOT EXISTS executions (
     idempotency_key TEXT PRIMARY KEY,
     recovery_id     TEXT NOT NULL,
-    provider        TEXT NOT NULL,           -- mock | razorpay
+    provider        TEXT NOT NULL,
     link_id         TEXT NOT NULL,
     short_url       TEXT NOT NULL,
     status          TEXT NOT NULL,
     created_at      TEXT NOT NULL
 );
-
--- Hash-chained audit log. Append-only; each row's hash covers the previous.
 CREATE TABLE IF NOT EXISTS audit (
-    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     recovery_id TEXT,
-    stage      TEXT NOT NULL,
+    stage       TEXT NOT NULL,
     detail_json TEXT NOT NULL,
-    prev_hash  TEXT NOT NULL,
-    this_hash  TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    prev_hash   TEXT NOT NULL,
+    this_hash   TEXT NOT NULL,
+    created_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
+CREATE INDEX IF NOT EXISTS idx_recoveries_status ON recoveries(status);
+CREATE INDEX IF NOT EXISTS idx_audit_recovery ON audit(recovery_id);
 """
 
+# Postgres needs BIGSERIAL instead of INTEGER ... AUTOINCREMENT.
+_SCHEMA_PG = _SCHEMA_SQLITE.replace(
+    "seq         INTEGER PRIMARY KEY AUTOINCREMENT", "seq         BIGSERIAL PRIMARY KEY"
+)
 
-def connect(db_path: str | None = None) -> sqlite3.Connection:
+SCHEMA = _SCHEMA_PG if IS_PG else _SCHEMA_SQLITE
+
+
+def _translate(sql: str) -> str:
+    """Rewrite SQLite-flavoured SQL for Postgres, so every call site stays plain
+    SQLite SQL. Handles the two upsert idioms and both placeholder styles."""
+    if not IS_PG:
+        return sql
+
+    m_ignore = re.match(r"\s*INSERT\s+OR\s+IGNORE\s+INTO\s+(\w+)\s*\(([^)]*)\)", sql, re.I)
+    m_replace = re.match(r"\s*INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]*)\)", sql, re.I)
+    if m_ignore:
+        sql = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", sql, flags=re.I)
+        sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+    elif m_replace:
+        cols = [c.strip() for c in m_replace.group(2).split(",")]
+        pk = cols[0]  # by convention the first column is the primary key here
+        updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != pk)
+        sql = re.sub(r"INSERT\s+OR\s+REPLACE\s+INTO", "INSERT INTO", sql, flags=re.I)
+        sql = sql.rstrip().rstrip(";") + f" ON CONFLICT ({pk}) DO UPDATE SET {updates}"
+
+    # Named placeholders (:name -> %(name)s), then positional (? -> %s).
+    sql = re.sub(r":(\w+)", r"%(\1)s", sql)
+    sql = sql.replace("?", "%s")
+    return sql
+
+
+class _Cursor:
+    """Minimal cursor facade so call sites keep using .fetchone()/.fetchall()."""
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def __iter__(self):
+        return iter(self._cur.fetchall())
+
+
+class Conn:
+    """Uniform connection wrapper over sqlite3 / psycopg."""
+
+    def __init__(self, raw, is_pg: bool):
+        self._raw = raw
+        self.is_pg = is_pg
+
+    def execute(self, sql: str, params=()):
+        sql = _translate(sql)
+        if self.is_pg:
+            cur = self._raw.cursor()
+            cur.execute(sql, params)
+            return _Cursor(cur)
+        return _Cursor(self._raw.execute(sql, params))
+
+    def executemany(self, sql: str, seq):
+        sql = _translate(sql)
+        if self.is_pg:
+            cur = self._raw.cursor()
+            cur.executemany(sql, list(seq))
+            return _Cursor(cur)
+        return _Cursor(self._raw.executemany(sql, seq))
+
+    def executescript(self, script: str):
+        if self.is_pg:
+            cur = self._raw.cursor()
+            cur.execute(script)
+            return
+        self._raw.executescript(script)
+
+    def close(self):
+        self._raw.close()
+
+
+def connect(db_path: str | None = None) -> Conn:
+    if IS_PG:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        raw = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row)
+        return Conn(raw, True)
+
     path = db_path or settings.db_path
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10, isolation_level=None)  # autocommit
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    return conn
+    raw = sqlite3.connect(path, timeout=15, isolation_level=None)
+    raw.row_factory = sqlite3.Row
+    raw.execute("PRAGMA journal_mode=WAL;")
+    raw.execute("PRAGMA busy_timeout=8000;")
+    return Conn(raw, False)
 
 
 def init_db(db_path: str | None = None) -> None:

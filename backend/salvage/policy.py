@@ -102,8 +102,11 @@ def decide(
     # A down bank cannot be fixed by a discount. Deterministically switch rail.
     if ctx.root_cause == RootCause.BANK_DOWNTIME:
         vetoed = ctx.proposed_play != Play.SWITCH_RAIL
-        if vetoed:
-            reasons.append("bank downtime: forced SWITCH_RAIL, money can't fix an outage")
+        reasons.append(
+            "bank downtime: forced SWITCH_RAIL, money can't fix an outage"
+            if vetoed
+            else "bank downtime: switch rail, no incentive"
+        )
         return PolicyDecision(
             final_play=Play.SWITCH_RAIL,
             incentive_paise=0,
