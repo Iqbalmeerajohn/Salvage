@@ -39,19 +39,18 @@ async def cors_safe_errors(request: Request, call_next):
         return await call_next(request)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; we re-surface it
         import os
-        import traceback
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "detail": "internal server error",
-                "error": f"{type(exc).__name__}: {exc}",
-                "is_pg": IS_PG,
-                "db_target": ("postgres" if IS_PG else settings.db_path),
-                "trace": traceback.format_exc()[-1400:],
-            },
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
+        body = {"detail": "internal server error"}
+        # Opt-in detail for debugging; off by default so a public deployment does
+        # not leak internal errors or stack traces. Set SALVAGE_DEBUG_ERRORS=true.
+        if os.getenv("SALVAGE_DEBUG_ERRORS", "").lower() in ("1", "true", "yes"):
+            import traceback
+
+            body["error"] = f"{type(exc).__name__}: {exc}"
+            body["db"] = "postgres" if IS_PG else "sqlite"
+            body["trace"] = traceback.format_exc()[-1400:]
+        return JSONResponse(status_code=500, content=body,
+                            headers={"Access-Control-Allow-Origin": "*"})
 
 
 def _now() -> str:
