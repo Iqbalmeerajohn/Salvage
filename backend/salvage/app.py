@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import agent, audit, metrics, outbox
 from .config import settings
-from .db import connect, init_db
+from .db import IS_PG, connect, init_db
 from .payments.factory import get_gateway
 from .seed import load
 
@@ -69,6 +69,8 @@ def health() -> dict:
             "gateway": "razorpay_test" if settings.use_real_gateway else "mock",
             "llm": "gemini" if settings.gemini_enabled else ("local" if settings.local_enabled else "mock"),
             "webhook_signature": settings.require_webhook_signature or bool(settings.razorpay_webhook_secret),
+            # Which storage engine is live. No credentials are exposed.
+            "db": "postgres" if IS_PG else "sqlite",
         },
     }
 

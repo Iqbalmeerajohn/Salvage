@@ -25,9 +25,15 @@ def _bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
-    # Database (SQLite file; ports to Postgres in production).
+    # Database (SQLite file; Postgres via DATABASE_URL/POSTGRES_URL* in the cloud).
+    # On Vercel the deployment filesystem is read-only apart from /tmp, so the
+    # SQLite fallback must live there or every DB-backed route 500s. This is only
+    # a fallback: when a Postgres URL is configured, db.py uses that instead.
     db_path: str = os.getenv(
-        "SALVAGE_DB", str(Path(__file__).resolve().parents[2] / "data" / "salvage.db")
+        "SALVAGE_DB",
+        "/tmp/salvage.db"
+        if os.getenv("VERCEL")
+        else str(Path(__file__).resolve().parents[2] / "data" / "salvage.db"),
     )
 
     # LLM providers. Empty key => that provider is skipped, chain falls to mock.
