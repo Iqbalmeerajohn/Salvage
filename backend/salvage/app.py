@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from . import agent, audit, metrics, outbox
 from .config import settings
@@ -22,6 +23,26 @@ app = FastAPI(title="SALVAGE", version="0.1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+
+@app.middleware("http")
+async def cors_safe_errors(request: Request, call_next):
+    """Guarantee CORS headers on EVERY response, including 500s.
+
+    Starlette's built-in ServerErrorMiddleware sits outside CORSMiddleware, so an
+    unhandled exception returns a bare 500 with no Access-Control-Allow-Origin
+    header. The browser then reports it as a CORS failure, masking the real
+    error. Catching here returns a JSON 500 that still carries the CORS header,
+    so the frontend sees the true status and message instead of a fake CORS wall.
+    """
+    try:
+        return await call_next(request)
+    except Exception as exc:  # noqa: BLE001 - deliberately broad; we re-surface it
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "internal server error", "error": f"{type(exc).__name__}: {exc}"},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
 
 
 def _now() -> str:
