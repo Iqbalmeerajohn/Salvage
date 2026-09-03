@@ -38,9 +38,18 @@ async def cors_safe_errors(request: Request, call_next):
     try:
         return await call_next(request)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; we re-surface it
+        import os
+        import traceback
+
         return JSONResponse(
             status_code=500,
-            content={"detail": "internal server error", "error": f"{type(exc).__name__}: {exc}"},
+            content={
+                "detail": "internal server error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "is_pg": IS_PG,
+                "db_target": ("postgres" if IS_PG else settings.db_path),
+                "trace": traceback.format_exc()[-1400:],
+            },
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
