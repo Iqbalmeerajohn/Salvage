@@ -206,16 +206,54 @@ class Conn:
         self._raw.close()
 
 
+def _ipv4_hostaddr(host: str, port: int) -> str | None:
+    """Resolve `host` to a single IPv4 address, or None if it has no A record.
+
+    psycopg3 does its own dual-stack (AF_UNSPEC) hostname resolution inside
+    conninfo_attempts, which fails on Vercel/Lambda with
+    'OperationalError: [Errno 16] Device or resource busy'. We resolve to IPv4
+    ourselves and hand psycopg a `hostaddr`, so it skips that path entirely.
+    Forcing IPv4 also matters because Vercel's runtime is IPv4-only while
+    Supabase's DIRECT endpoint is IPv6-only (the pooler is IPv4)."""
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    return infos[0][4][0] if infos else None
+
+
 def connect(db_path: str | None = None) -> Conn:
     if IS_PG:
+        from urllib.parse import urlparse
+
         import psycopg
         from psycopg.rows import dict_row
 
+        # Pre-resolve the host to IPv4 and pass hostaddr, bypassing psycopg3's
+        # internal resolver (which raises EBUSY on Vercel). host= is kept for TLS
+        # SNI / certificate verification.
+        parsed = urlparse(DATABASE_URL)
+        kwargs: dict = {}
+        if parsed.hostname:
+            ipv4 = _ipv4_hostaddr(parsed.hostname, parsed.port or 5432)
+            if ipv4:
+                kwargs["hostaddr"] = ipv4
+            elif os.getenv("VERCEL"):
+                # No IPv4 for this host on an IPv4-only runtime -> it will never
+                # connect. Fail with an actionable message instead of EBUSY.
+                raise RuntimeError(
+                    f"DATABASE_URL host '{parsed.hostname}' has no IPv4 address. "
+                    "On Vercel use the Supabase Transaction pooler connection "
+                    "string (host *.pooler.supabase.com, port 6543)."
+                )
+
         # prepare_threshold=None disables server-side prepared statements, which
-        # keeps us compatible with pgbouncer transaction-pooler URLs (Supabase
-        # pooled connection) as well as direct connections.
+        # keeps us compatible with pgbouncer transaction-pooler URLs.
         raw = psycopg.connect(
-            DATABASE_URL, autocommit=True, row_factory=dict_row, prepare_threshold=None
+            DATABASE_URL, autocommit=True, row_factory=dict_row,
+            prepare_threshold=None, **kwargs,
         )
         return Conn(raw, True)
 
