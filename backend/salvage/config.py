@@ -16,6 +16,13 @@ except Exception:
     pass  # dotenv is optional; env vars still work without it
 
 
+def _int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
 def _bool(name: str, default: bool) -> bool:
     v = os.getenv(name)
     if v is None:
@@ -49,6 +56,13 @@ class Settings:
 
     # Behaviour flags.
     require_webhook_signature: bool = _bool("REQUIRE_WEBHOOK_SIGNATURE", False)
+
+    # Optional cap on how many real Payment Links may be created against the
+    # Razorpay TEST account (test mode has a low quota). Deliberately NOT a
+    # constant: set RAZORPAY_MAX_TEST_LINKS in the environment. 0 = no cap.
+    # Only enforced when the real Razorpay gateway is active; the mock gateway
+    # is unlimited because it creates nothing upstream.
+    razorpay_max_test_links: int = _int("RAZORPAY_MAX_TEST_LINKS", 0)
 
     @property
     def use_real_gateway(self) -> bool:

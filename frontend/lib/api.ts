@@ -1,8 +1,22 @@
 // Thin client for the SALVAGE backend. Base URL is configurable so the same
 // build works locally and when deployed.
-export const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// The backend base URL is ALWAYS taken from NEXT_PUBLIC_API_URL. The localhost
+// fallback applies only in local development, so a production deploy that is
+// missing the variable fails loudly instead of silently calling the developer's
+// own machine (which is what an empty dashboard would otherwise be hiding).
+const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
+
+export const API =
+  configured || (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+
+export const API_CONFIGURED = Boolean(API);
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!API) {
+    throw new Error(
+      "NEXT_PUBLIC_API_URL is not set on this deployment — the dashboard has no backend to call."
+    );
+  }
   const res = await fetch(`${API}${path}`, { cache: "no-store", ...init });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();

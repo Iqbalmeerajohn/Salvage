@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, rupees, type Metrics, type Recovery } from "@/lib/api";
+import { API, api, rupees, type Metrics, type Recovery } from "@/lib/api";
 
 export default function Dashboard() {
   const [health, setHealth] = useState<any>(null);
@@ -107,8 +107,8 @@ export default function Dashboard() {
 
       {err && (
         <div className="banner warn" style={{ marginTop: 14 }}>
-          {err} — is the backend running on :8000? Start it with{" "}
-          <code>uvicorn salvage.app:app</code>.
+          {err}
+          {API ? <> — backend: <code>{API}</code></> : null}
         </div>
       )}
 

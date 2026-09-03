@@ -20,12 +20,28 @@ from .config import settings
 
 # Accept our own var first, then the names the Supabase<>Vercel integration
 # injects automatically (so connecting that integration needs zero manual config).
-# Prefer a non-pooling/direct URL for psycopg; fall back to the pooled one.
+#
+# Order matters. Supabase's DIRECT connection (db.<ref>.supabase.co:5432) is
+# IPv6-only on the free tier, and Vercel's runtime is IPv4-only -- so the direct
+# URL is unreachable from a Vercel function. Supabase's documented choice for
+# serverless is the Supavisor POOLED connection in transaction mode (port 6543),
+# which is IPv4 on every tier. So we prefer pooled URLs and keep the non-pooling
+# one only as a last resort (it is the right choice on a normal IPv6-capable VM).
+# Transaction mode forbids prepared statements -- see prepare_threshold below.
+def _clean(url: str | None) -> str:
+    if not url:
+        return ""
+    url = url.strip()
+    # Prisma-style URLs carry ?pgbouncer=true, which libpq does not understand.
+    url = re.sub(r"([?&])pgbouncer=true&?", r"\1", url).rstrip("?&")
+    return url
+
+
 DATABASE_URL = (
-    os.getenv("DATABASE_URL")
-    or os.getenv("POSTGRES_URL_NON_POOLING")
-    or os.getenv("POSTGRES_URL")
-    or ""
+    _clean(os.getenv("DATABASE_URL"))
+    or _clean(os.getenv("POSTGRES_URL"))
+    or _clean(os.getenv("POSTGRES_PRISMA_URL"))
+    or _clean(os.getenv("POSTGRES_URL_NON_POOLING"))
 )
 IS_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 

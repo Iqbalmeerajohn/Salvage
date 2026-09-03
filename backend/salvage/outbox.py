@@ -18,6 +18,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from . import audit
+from .config import settings
 from .payments.base import LinkResult, PaymentGateway
 
 MAX_ATTEMPTS = 5
@@ -67,6 +68,23 @@ def execute_one(conn: sqlite3.Connection, gateway: PaymentGateway, row: sqlite3.
 
     rec = conn.execute("SELECT * FROM recoveries WHERE id=?", (row["recovery_id"],)).fetchone()
     cust = conn.execute("SELECT * FROM customers WHERE id=?", (rec["customer_id"],)).fetchone()
+
+    # Optional, env-configured budget for REAL Razorpay test-mode Payment Links
+    # (test accounts have a small quota). 0 = unlimited. Never a hardcoded number.
+    cap = settings.razorpay_max_test_links
+    if cap > 0 and getattr(gateway, "name", "") == "razorpay":
+        used = conn.execute(
+            "SELECT COUNT(*) AS c FROM executions WHERE provider='razorpay'"
+        ).fetchone()["c"]
+        if used >= cap:
+            conn.execute(
+                "UPDATE outbox SET status='dead', updated_at=? WHERE idempotency_key=?",
+                (_now(), key),
+            )
+            audit.append(conn, "LINK_BUDGET_EXHAUSTED", {
+                "idempotency_key": key, "used": used, "cap": cap,
+            }, recovery_id=row["recovery_id"])
+            raise RuntimeError(f"razorpay test link budget reached ({used}/{cap})")
 
     # Step 2: the single external call.
     result = gateway.create_recovery_link(
