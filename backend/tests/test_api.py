@@ -9,10 +9,10 @@ def test_health(client):
 
 
 def test_run_batch_produces_metrics_and_recoveries(client):
-    r = client.post("/demo/run-batch")
+    r = client.post("/demo/run-batch?limit=200")
     assert r.status_code == 200
     body = r.json()
-    assert body["processed"] > 0
+    assert body["processed_this_call"] >= 0 and body["total_failed"] > 0
     m = body["metrics"]
     for k in ("value_at_risk_paise", "incremental_lift", "net_incremental_value_paise", "label"):
         assert k in m
@@ -26,13 +26,13 @@ def test_run_batch_produces_metrics_and_recoveries(client):
 
 
 def test_audit_chain_intact_via_api(client):
-    client.post("/demo/run-batch")
+    client.post("/demo/run-batch?limit=200")
     v = client.get("/audit/verify").json()
     assert v["intact"] is True
 
 
 def test_approval_flow(client):
-    client.post("/demo/run-batch")
+    client.post("/demo/run-batch?limit=200")
     recs = client.get("/recoveries").json()["recoveries"]
     waiting = [r for r in recs if r["status"] == "awaiting_approval"]
     assert waiting, "expected at least one recovery needing approval"

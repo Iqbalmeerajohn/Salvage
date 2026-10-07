@@ -43,7 +43,7 @@ async def cors_safe_errors(request: Request, call_next):
         body = {"detail": "internal server error"}
         # Opt-in detail for debugging; off by default so a public deployment does
         # not leak internal errors or stack traces. Set SALVAGE_DEBUG_ERRORS=true.
-        if True:  # TEMP: surface DB error for diagnosis (revert after)
+        if os.getenv("SALVAGE_DEBUG_ERRORS", "").lower() in ("1", "true", "yes"):
             import traceback
 
             body["error"] = f"{type(exc).__name__}: {exc}"
@@ -202,31 +202,46 @@ def simulate_failure(payment_id: str) -> dict:
 
 
 @app.post("/demo/run-batch")
-def run_batch() -> dict:
-    """Process every failed payment in the dataset, then drain the worker once.
-    This is the headline demo action.
-
-    The bulk batch runs on the deterministic MOCK diagnoser on purpose: it makes
-    the demo instant and byte-identical every time, and keeps us well under the
-    serverless timeout (a real-LLM call per payment would be minutes for 88 rows).
-    To showcase the live model, use POST /demo/simulate-failure/{payment_id},
-    which runs a single payment through the configured provider (Gemini)."""
+def run_batch(limit: int = 12) -> dict:
+    """Process a bounded chunk of not-yet-processed failed payments, then drain
+    the worker. Resumable and idempotent: each call handles up to `limit` new
+    payments and returns progress, so it always finishes within the serverless
+    time limit even against a remote database. Call repeatedly (or let the UI
+    poll) until `remaining` is 0."""
     from .llm.mock import MockProvider
     from .llm.router import Router
 
     mock_router = Router(providers=[MockProvider()])
     conn = _db()
     try:
-        failed = conn.execute("SELECT * FROM payments WHERE status='failed'").fetchall()
-        for p in failed:
+        total_failed = conn.execute(
+            "SELECT COUNT(*) AS c FROM payments WHERE status='failed'"
+        ).fetchone()["c"]
+        todo = conn.execute(
+            "SELECT p.* FROM payments p WHERE p.status='failed' "
+            "AND NOT EXISTS (SELECT 1 FROM recoveries r WHERE r.id = 'evt_' || p.id) "
+            "ORDER BY p.id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        for p in todo:
             event_id = f"evt_{p['id']}"
             conn.execute(
                 "INSERT OR IGNORE INTO events (event_id, kind, payload_json, received_at) VALUES (?,?,?,?)",
                 (event_id, "payment.failed", json.dumps({"payment_id": p["id"]}), _now()),
             )
             agent.process_failed_payment(conn, event_id, p, router=mock_router)
-        executed = outbox.run_once(conn, get_gateway())
-        return {"processed": len(failed), "executed": executed, "metrics": metrics.compute(conn)}
+        executed = outbox.run_once(conn, get_gateway(), limit=20)
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM payments p WHERE p.status='failed' "
+            "AND NOT EXISTS (SELECT 1 FROM recoveries r WHERE r.id = 'evt_' || p.id)"
+        ).fetchone()["c"]
+        return {
+            "processed_this_call": len(todo),
+            "executed": executed,
+            "remaining": remaining,
+            "total_failed": total_failed,
+            "metrics": metrics.compute(conn),
+        }
     finally:
         conn.close()
 
