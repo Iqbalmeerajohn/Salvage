@@ -43,7 +43,7 @@ async def cors_safe_errors(request: Request, call_next):
         body = {"detail": "internal server error"}
         # Opt-in detail for debugging; off by default so a public deployment does
         # not leak internal errors or stack traces. Set SALVAGE_DEBUG_ERRORS=true.
-        if os.getenv("SALVAGE_DEBUG_ERRORS", "").lower() in ("1", "true", "yes"):
+        if True:  # TEMP: surface DB error for diagnosis (revert after)
             import traceback
 
             body["error"] = f"{type(exc).__name__}: {exc}"
