@@ -24,3 +24,9 @@ Thumbs.db
 data/*.db
 data/*.db-wal
 data/*.db-shm
+
+# local secret handoff (never commit)
+DATABASE_URL.secret.txt
+
+.vercel
+.env*
